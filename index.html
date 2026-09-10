@@ -700,6 +700,29 @@
 // Pokud tento soubor prohlížíš v náhledu uvnitř claude.ai, localStorage
 // tam nemusí fungovat. Po nahrání na vlastní hosting poběží normálně.
 
+
+// ---- Telegram upozorneni pres Supabase Edge Function ----
+const SUPABASE_FUNCTION_URL = 'https://hltuddfdwooctyxwdwhg.supabase.co/functions/v1/telegram-notify';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_aqGcxaIJSAgJgnG4Y7iuJA_NAY7OFh4';
+
+async function sendTelegramNotification(entry){
+  const response = await fetch(SUPABASE_FUNCTION_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': SUPABASE_PUBLISHABLE_KEY,
+      'Authorization': 'Bearer ' + SUPABASE_PUBLISHABLE_KEY
+    },
+    body: JSON.stringify(entry)
+  });
+
+  const result = await response.json().catch(() => ({}));
+  if(!response.ok || !result.ok){
+    throw new Error(result.error || ('HTTP ' + response.status));
+  }
+  return result;
+}
+
 const STORAGE_KEY = 'surebety_evidence_v4';
 let surebets = [];
 let idCounter = 1;
@@ -1128,6 +1151,12 @@ function addEntry(){
   };
   surebets.unshift(entry);
   saveToStorage();
+  // Telegram se odesila az po uspesnem ulozeni do localStorage.
+  // Chyba Telegramu nema zrusit lokalni ulozeni zaznamu.
+  sendTelegramNotification(entry).catch(err => {
+    console.error('Telegram notification failed:', err);
+    notify('<b>Záznam byl uložen, ale Telegram zpráva se neodeslala.</b> ' + err.message);
+  });
 
   ['fSport','fTotal','fLeague','fEvent','fStartDate','fStartTime',
    'fSK1','fMarket1','fOdds1','fSK2','fMarket2','fOdds2','fSK3','fMarket3','fOdds3']
