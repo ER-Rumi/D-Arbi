@@ -433,6 +433,48 @@
     text-align:center; color:var(--text-dim); font-size:13.5px;
     padding:44px 20px; border:1px dashed var(--line); border-radius:18px; margin-top:16px;
   }
+
+
+  /* ---- nacitani surebetu ze screenshotu (OCR pouze v prohlizeci) ---- */
+  .ocr-box{
+    margin:0 0 20px;
+    border:1px dashed rgba(167,139,250,0.65);
+    border-radius:14px;
+    padding:16px;
+    background:linear-gradient(120deg,rgba(167,139,250,0.08),rgba(45,212,191,0.05));
+    transition:border-color .15s ease, background .15s ease, transform .15s ease;
+  }
+  .ocr-box.dragover{
+    border-color:var(--gold);
+    background:rgba(242,201,76,0.08);
+    transform:translateY(-1px);
+  }
+  .ocr-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;}
+  .ocr-title{font-weight:800;font-size:14px;}
+  .ocr-help{font-size:12px;color:var(--text-dim);margin-top:3px;max-width:48ch;}
+  .ocr-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  .ocr-file{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;}
+  .ocr-btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:7px;
+    min-height:42px;padding:10px 15px;border-radius:10px;cursor:pointer;
+    border:1px solid var(--line);background:rgba(255,255,255,0.05);color:var(--text);
+    font-family:inherit;font-weight:800;font-size:13px;user-select:none;
+  }
+  .ocr-btn:hover{border-color:var(--purple);}
+  .ocr-btn.busy{opacity:.55;cursor:wait;pointer-events:none;}
+  .ocr-note{margin-top:10px;font-size:11.5px;color:var(--text-dim);}
+  .ocr-status{display:none;margin-top:11px;padding:9px 11px;border-radius:9px;font-size:12.5px;border:1px solid var(--line);}
+  .ocr-status.show{display:block;}
+  .ocr-status.ok{color:var(--green);background:rgba(52,211,153,0.07);}
+  .ocr-status.warn{color:var(--amber);background:rgba(251,146,60,0.07);}
+  .ocr-status.err{color:var(--red);background:rgba(251,113,133,0.07);}
+  @media(max-width:560px){
+    .ocr-head{display:block;}
+    .ocr-actions{margin-top:12px;}
+    .ocr-btn{width:100%;}
+    .ocr-help .desktop-only{display:none;}
+  }
+
 </style>
 </head>
 <body>
@@ -451,6 +493,22 @@
 
   <div class="panel">
     <h2>Příležitost</h2>
+
+
+    <div class="ocr-box" id="ocrBox">
+      <div class="ocr-head">
+        <div>
+          <div class="ocr-title">📸 Načíst surebet ze screenshotu</div>
+          <div class="ocr-help">Na mobilu vyber screenshot z galerie. <span class="desktop-only">Na počítači ho můžeš také přetáhnout sem nebo vložit přes Ctrl+V.</span></div>
+        </div>
+        <div class="ocr-actions">
+          <input class="ocr-file" type="file" id="ocrFile" accept="image/*">
+          <label class="ocr-btn" id="ocrButton" for="ocrFile">📱 Vybrat obrázek</label>
+        </div>
+      </div>
+      <div class="ocr-note">Obrázek se nikam neukládá ani neposílá do Supabase. Přečte se pouze v tomto prohlížeči a po zpracování se zahodí.</div>
+      <div class="ocr-status" id="ocrStatus"></div>
+    </div>
 
     <div class="grid2">
       <div class="field">
@@ -694,6 +752,7 @@
 
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <script>
 // ---- trvalé ukládání ----
 // Data se ukládají do localStorage tohoto prohlížeče pod klíčem
@@ -759,6 +818,400 @@ function notify(html){
   const el = document.getElementById('storageNotice');
   el.classList.add('show');
   el.innerHTML = html;
+}
+
+
+// ---- OCR ze screenshotu: zpracovani probiha pouze lokalne v prohlizeci ----
+let ocrWorkerPromise = null;
+let ocrBusy = false;
+
+function setOcrStatus(type, message){
+  const el = document.getElementById('ocrStatus');
+  if(!el) return;
+  el.className = 'ocr-status show ' + type;
+  el.textContent = message;
+}
+
+function setOcrBusy(busy){
+  ocrBusy = busy;
+  const btn = document.getElementById('ocrButton');
+  if(!btn) return;
+  btn.classList.toggle('busy', busy);
+  btn.textContent = busy ? '🔎 Čtu screenshot…' : '📱 Vybrat obrázek';
+}
+
+function stripDiacritics(value){
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function parseOcrNumber(value){
+  if(value === null || value === undefined) return null;
+  let s = String(value).replace(/\u00a0/g, '').replace(/\s/g, '').replace(/[^0-9,.-]/g, '');
+  if(!s) return null;
+
+  if(s.includes(',') && s.includes('.')){
+    if(s.lastIndexOf(',') > s.lastIndexOf('.')){
+      s = s.replace(/\./g, '').replace(',', '.');
+    }else{
+      s = s.replace(/,/g, '');
+    }
+  }else if(s.includes(',')){
+    const pieces = s.split(',');
+    if(pieces[pieces.length - 1].length <= 2) s = pieces.slice(0,-1).join('') + '.' + pieces[pieces.length - 1];
+    else s = s.replace(/,/g, '');
+  }
+
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function cleanOcrText(text){
+  return String(text || '')
+    .replace(/\r/g, '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function extractOcrSection(text, label, nextLabel){
+  const re = new RegExp('(?:^|\\n)\\s*' + label + '\\s*:?\\s*([\\s\\S]*?)(?=\\n\\s*' + nextLabel + '\\s*:?|$)', 'i');
+  const m = text.match(re);
+  return m ? m[1].replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim() : '';
+}
+
+const OCR_BOOKMAKERS = [
+  { re:/^tipsport\s*:?\s*$/i, name:'Tipsport' },
+  { re:/^fortuna\s*:?\s*$/i, name:'Fortuna' },
+  { re:/^betano\s*(?:cz)?\s*:?\s*$/i, name:'Betano' },
+  { re:/^sazka(?:bet)?\s*:?\s*$/i, name:'Sazkabet' },
+  { re:/^synottip\s*:?\s*$/i, name:'Synottip' },
+  { re:/^kingsbet\s*:?\s*$/i, name:'KingsBet' }
+];
+
+function identifyBookmakerLine(line){
+  const normalized = stripDiacritics(String(line || '')).trim();
+  for(const b of OCR_BOOKMAKERS){
+    if(b.re.test(normalized)) return b.name;
+  }
+  return null;
+}
+
+function cleanMarketText(value){
+  return String(value || '')
+    .replace(/^[\s\[\]□■☐▪•·]+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseTipBlock(bookmaker, blockLines){
+  const joined = blockLines.join(' ');
+  const stakeMatch = joined.match(/Stake\s*:?\s*([0-9][0-9\s.,]*)/i);
+  const stake = stakeMatch ? parseOcrNumber(stakeMatch[1]) : null;
+
+  let market = '';
+  let odds = null;
+
+  for(const originalLine of blockLines){
+    let line = cleanMarketText(originalLine);
+    if(!line || /Stake\s*:/i.test(line) || /Place\s*Bet/i.test(line)) continue;
+
+    // Nejprve standardni varianta z Telegram screenshotu: TO(4.5) -> 1.77
+    let m = line.match(/^(.+?)\s*(?:→|->|=>|»|>)\s*([0-9]+(?:[.,][0-9]+)?)\s*(?:Place\s*Bet)?\s*$/i);
+
+    // OCR nekdy sipku ztrati; pak vezmeme posledni desetinne cislo na radku jako kurz.
+    if(!m){
+      m = line.match(/^(.+?)[\s:=-]+([0-9]+(?:[.,][0-9]+)?)\s*$/i);
+    }
+
+    if(m){
+      market = cleanMarketText(m[1]);
+      odds = parseOcrNumber(m[2]);
+      if(market && odds && odds > 1) break;
+    }
+  }
+
+  return { bookmaker, market, odds, stake };
+}
+
+function parseOcrTips(text){
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const starts = [];
+
+  lines.forEach((line, i) => {
+    const bookmaker = identifyBookmakerLine(line);
+    if(bookmaker) starts.push({ index:i, bookmaker });
+  });
+
+  const tips = [];
+  for(let i=0;i<starts.length;i++){
+    const start = starts[i];
+    const end = i + 1 < starts.length ? starts[i+1].index : lines.length;
+    const block = lines.slice(start.index + 1, end);
+    const tip = parseTipBlock(start.bookmaker, block);
+    if(tip.market && tip.odds && tip.odds > 1) tips.push(tip);
+  }
+
+  // Zalozni parser pro screenshoty, kde OCR spatne precte nazev sazkovky.
+  if(tips.length < 2){
+    const generic = [];
+    for(let i=0;i<lines.length;i++){
+      const line = cleanMarketText(lines[i]);
+      let m = line.match(/^(.+?)\s*(?:→|->|=>|»|>)\s*([0-9]+(?:[.,][0-9]+)?)/);
+      if(!m) continue;
+      const market = cleanMarketText(m[1]);
+      const odds = parseOcrNumber(m[2]);
+      if(!market || !odds || odds <= 1) continue;
+      const next = lines.slice(i+1, i+4).join(' ');
+      const sm = next.match(/Stake\s*:?\s*([0-9][0-9\s.,]*)/i);
+      generic.push({ bookmaker:'', market, odds, stake: sm ? parseOcrNumber(sm[1]) : null });
+    }
+    if(generic.length >= 2){
+      // Kdyz jsme sazkovku precetli aspon u nekterych bloku, zachovej ji podle poradi.
+      generic.forEach((g, i) => {
+        if(starts[i]) g.bookmaker = starts[i].bookmaker;
+      });
+      return generic.slice(0,3);
+    }
+  }
+
+  return tips.slice(0,3);
+}
+
+const OCR_MONTHS = {
+  jan:0, january:0, leden:0, led:0,
+  feb:1, february:1, unor:1, uno:1,
+  mar:2, march:2, brezen:2, brez:2,
+  apr:3, april:3, duben:3, dub:3,
+  may:4, kveten:4, kve:4,
+  jun:5, june:5, cerven:5, cer:5,
+  jul:6, july:6, cervenec:6, cvc:6,
+  aug:7, august:7, srpen:7, srp:7,
+  sep:8, sept:8, september:8, zari:8, zar:8,
+  oct:9, october:9, rijen:9, rij:9,
+  nov:10, november:10, listopad:10, lis:10,
+  dec:11, december:11, prosinec:11, pro:11
+};
+
+function parseOcrStart(text){
+  let m = text.match(/Start\s*at\s*:?\s*(\d{1,2})\s+([A-Za-zÀ-ž.]+)\s+(\d{1,2})\s*:\s*(\d{2})\s*(?:UTC)?/i);
+  if(!m) return null;
+
+  const day = Number(m[1]);
+  const monthKey = stripDiacritics(m[2]).toLowerCase().replace(/\./g,'');
+  const month = OCR_MONTHS[monthKey] ?? OCR_MONTHS[monthKey.slice(0,3)];
+  const hour = Number(m[3]);
+  const minute = Number(m[4]);
+  if(month === undefined || day < 1 || day > 31 || hour > 23 || minute > 59) return null;
+
+  const now = new Date();
+  let year = now.getUTCFullYear();
+  let candidate = Date.UTC(year, month, day, hour, minute);
+
+  // Surebety jsou typicky budouci. Pokud by datum bez roku vyslo o vice nez 30 dni do minulosti,
+  // povazuj ho za stejny den v nasledujicim roce (uzitecne napr. na prelomu roku).
+  if(candidate < Date.now() - 30*24*60*60*1000){
+    year += 1;
+    candidate = Date.UTC(year, month, day, hour, minute);
+  }
+
+  return {
+    date: `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`,
+    time: `${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}`
+  };
+}
+
+function parseSurebetScreenshotText(rawText){
+  const text = cleanOcrText(rawText);
+
+  const profitMatch = text.match(/Profit\s*:?\s*([0-9]+(?:[.,][0-9]+)?)\s*%/i);
+  const sportMatch = text.match(/(?:^|\n)\s*Sport\s*:?\s*([^\n]+)/i);
+
+  const league = extractOcrSection(text, 'League', 'Event');
+  const event = extractOcrSection(text, 'Event', 'Start\\s*at');
+  const start = parseOcrStart(text);
+  const tips = parseOcrTips(text);
+
+  const validStakes = tips.map(t => t.stake).filter(v => Number.isFinite(v));
+  const totalStake = validStakes.length >= 2 ? validStakes.reduce((a,b) => a+b, 0) : null;
+
+  return {
+    rawText:text,
+    profit: profitMatch ? parseOcrNumber(profitMatch[1]) : null,
+    sport: sportMatch ? sportMatch[1].trim() : '',
+    league,
+    event,
+    start,
+    tips,
+    totalStake
+  };
+}
+
+function fillFormFromScreenshot(data){
+  if(data.sport) document.getElementById('fSport').value = data.sport;
+  if(data.league) document.getElementById('fLeague').value = data.league;
+  if(data.event) document.getElementById('fEvent').value = data.event;
+  if(data.totalStake && data.totalStake > 0) document.getElementById('fTotal').value = data.totalStake.toFixed(2);
+
+  if(data.start){
+    document.getElementById('fStartDate').value = data.start.date;
+    document.getElementById('fStartTime').value = data.start.time;
+  }
+
+  // Pred novym nacitanim vycisti tipy, aby v nich nezustala stara data.
+  for(let i=1;i<=3;i++){
+    document.getElementById('fSK'+i).value = '';
+    document.getElementById('fMarket'+i).value = '';
+    document.getElementById('fOdds'+i).value = '';
+  }
+
+  data.tips.slice(0,3).forEach((tip, idx) => {
+    const i = idx + 1;
+    document.getElementById('fSK'+i).value = tip.bookmaker || '';
+    document.getElementById('fMarket'+i).value = tip.market || '';
+    document.getElementById('fOdds'+i).value = tip.odds || '';
+  });
+
+  if(data.tips.length >= 3){
+    document.getElementById('tip3Block').style.display = 'block';
+    document.getElementById('addTip3Btn').style.display = 'none';
+  }else{
+    document.getElementById('tip3Block').style.display = 'none';
+    document.getElementById('addTip3Btn').style.display = 'inline-block';
+  }
+
+  recalc();
+
+  const calc = getCalc();
+  const warnings = [];
+  if(!data.event) warnings.push('nepodařilo se přečíst událost');
+  if(data.tips.length < 2) warnings.push('nepodařilo se spolehlivě přečíst oba tipy');
+  if(!data.start) warnings.push('nepodařilo se přečíst datum/čas');
+
+  if(calc && Number.isFinite(data.profit) && Math.abs(calc.profit - data.profit) > 0.20){
+    warnings.push(`OCR uvádí zisk ${data.profit.toFixed(2)} %, ale z přečtených kurzů vychází ${calc.profit.toFixed(2)} %`);
+  }
+
+  if(warnings.length){
+    setOcrStatus('warn', 'Screenshot byl načten, ale zkontroluj formulář: ' + warnings.join('; ') + '.');
+  }else{
+    setOcrStatus('ok', '✅ Vyplněno ze screenshotu. Zkontroluj údaje a klikni na „Uložit do evidence“.');
+  }
+}
+
+async function getOcrWorker(){
+  if(!window.Tesseract) throw new Error('OCR knihovna se nenačetla. Zkontroluj připojení k internetu a obnov stránku.');
+  if(!ocrWorkerPromise){
+    ocrWorkerPromise = window.Tesseract.createWorker('eng');
+  }
+  return await ocrWorkerPromise;
+}
+
+async function resizeImageForOcr(file){
+  // Screenshoty posilame OCR pouze v pameti. Vetsi obrazky zmensime, aby byl mobil rychlejsi.
+  const url = URL.createObjectURL(file);
+  try{
+    const img = await new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error('Obrázek se nepodařilo otevřít.'));
+      image.src = url;
+    });
+
+    const maxWidth = 1800;
+    const scale = img.naturalWidth > maxWidth ? maxWidth / img.naturalWidth : 1;
+    if(scale >= 0.999) return file;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    const ctx = canvas.getContext('2d', { alpha:false });
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    return await new Promise((resolve, reject) => {
+      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Obrázek se nepodařilo připravit pro OCR.')), 'image/jpeg', 0.92);
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function processScreenshotFile(file){
+  if(!file || ocrBusy) return;
+  if(!String(file.type || '').startsWith('image/')){
+    setOcrStatus('err', 'Vyber prosím obrázek nebo screenshot.');
+    return;
+  }
+
+  setOcrBusy(true);
+  setOcrStatus('show', 'Čtu screenshot…');
+
+  try{
+    const prepared = await resizeImageForOcr(file);
+    const worker = await getOcrWorker();
+    const result = await worker.recognize(prepared);
+    const parsed = parseSurebetScreenshotText(result?.data?.text || '');
+
+    if(!parsed.rawText){
+      throw new Error('Ze screenshotu se nepodařilo přečíst žádný text.');
+    }
+
+    fillFormFromScreenshot(parsed);
+  }catch(err){
+    console.error('OCR failed:', err);
+    setOcrStatus('err', 'Screenshot se nepodařilo načíst: ' + (err?.message || String(err)));
+  }finally{
+    setOcrBusy(false);
+    const input = document.getElementById('ocrFile');
+    if(input) input.value = ''; // zadny obrazek nezustava ulozeny ve formulari
+  }
+}
+
+function initScreenshotOcr(){
+  const input = document.getElementById('ocrFile');
+  const box = document.getElementById('ocrBox');
+  if(!input || !box) return;
+
+  input.addEventListener('change', () => {
+    const file = input.files && input.files[0];
+    if(file) processScreenshotFile(file);
+  });
+
+  ['dragenter','dragover'].forEach(type => box.addEventListener(type, e => {
+    e.preventDefault();
+    e.stopPropagation();
+    box.classList.add('dragover');
+  }));
+
+  ['dragleave','drop'].forEach(type => box.addEventListener(type, e => {
+    e.preventDefault();
+    e.stopPropagation();
+    box.classList.remove('dragover');
+  }));
+
+  box.addEventListener('drop', e => {
+    const files = e.dataTransfer?.files;
+    if(files && files[0]) processScreenshotFile(files[0]);
+  });
+
+  document.addEventListener('paste', e => {
+    if(ocrBusy) return;
+    const items = Array.from(e.clipboardData?.items || []);
+    const imageItem = items.find(item => item.type && item.type.startsWith('image/'));
+    if(imageItem){
+      const file = imageItem.getAsFile();
+      if(file){
+        e.preventDefault();
+        processScreenshotFile(file);
+      }
+    }
+  });
+
+  window.addEventListener('beforeunload', () => {
+    if(ocrWorkerPromise){
+      ocrWorkerPromise.then(worker => worker?.terminate?.()).catch(() => {});
+    }
+  });
 }
 
 const MONTH_LABELS_CZ = ['leden','únor','březen','duben','květen','červen','červenec','srpen','září','říjen','listopad','prosinec'];
@@ -1359,6 +1812,7 @@ function render(){
   }).join('');
 }
 
+initScreenshotOcr();
 loadFromStorage();
 recalc();
 render();
