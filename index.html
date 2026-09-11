@@ -550,6 +550,10 @@
         <div class="calc-label">ZISK</div>
         <div class="calc-value" id="calcProfit">—</div>
       </div>
+      <div class="calc-item">
+        <div class="calc-label">🪎 VÝHRA</div>
+        <div class="calc-value calc-profit-pos" id="calcPayout">—</div>
+      </div>
       <div class="calc-stakes" id="calcStakes">Zadej aspoň dva kurzy pro výpočet.</div>
     </div>
 
@@ -1080,19 +1084,24 @@ function getCalc(){
   const sumInv = odds.reduce((a,o) => a + (1/o), 0);
   const profit = (1/sumInv - 1) * 100;
   const total = parseFloat(document.getElementById('fTotal').value);
-  const stakes = odds.map(o => (!isNaN(total) && total > 0) ? (total * (1/o) / sumInv) : null);
+  const hasTotal = !isNaN(total) && total > 0;
+  const stakes = odds.map(o => hasTotal ? (total * (1/o) / sumInv) : null);
+  const payout = hasTotal ? (total / sumInv) : null;
 
-  return { profit, stakes, oddsCount: odds.length, total: (!isNaN(total) && total > 0) ? total : null };
+  return { profit, payout, stakes, oddsCount: odds.length, total: hasTotal ? total : null };
 }
 
 function recalc(){
   const calc = getCalc();
   const profitEl = document.getElementById('calcProfit');
+  const payoutEl = document.getElementById('calcPayout');
   const stakesEl = document.getElementById('calcStakes');
 
   if(!calc){
     profitEl.textContent = '—';
     profitEl.className = 'calc-value';
+    payoutEl.textContent = '—';
+    payoutEl.dataset.rawValue = '';
     stakesEl.textContent = 'Zadej aspoň dva kurzy pro výpočet.';
     return;
   }
@@ -1101,9 +1110,12 @@ function recalc(){
   animateNumber(profitEl, calc.profit, 2, '%');
 
   if(calc.total){
+    animateNumber(payoutEl, calc.payout, 2, ' Kč');
     const labels = ['Tip 1','Tip 2','Tip 3'];
     stakesEl.innerHTML = calc.stakes.map((s,i) => s !== null ? `${labels[i]}: <b>${s.toFixed(2)}</b>` : '').join(' &nbsp;·&nbsp; ');
   } else {
+    payoutEl.textContent = '—';
+    payoutEl.dataset.rawValue = '';
     stakesEl.textContent = 'Zadej celkový vklad pro rozpočet na jednotlivé sázkovky.';
   }
 }
@@ -1145,6 +1157,7 @@ function addEntry(){
     tip2: `${sk2} — ${market2}`, odds2, stake2: calc.stakes[1],
     tip3: hasTip3 ? `${sk3} — ${market3}` : '', odds3: hasTip3 ? odds3raw : null, stake3: hasTip3 ? calc.stakes[2] : null,
     totalStake: calc.total,
+    payout: calc.payout,
     status: 'wait',
     addedAt,
     month: monthKey(addedAt)
@@ -1328,6 +1341,7 @@ function render(){
         <div class="event">${s.event}</div>
         ${s.league ? `<div class="league">${s.league}</div>` : ''}
         ${s.start ? `<div class="start-row"><span class="pulse"></span>začátek: ${formatStart(s.start)}</div>` : ''}
+        ${s.totalStake ? `<div class="start-row" style="color:var(--green);"><span>🪎</span><b>Výhra: ${((s.payout ?? (s.totalStake * (1 + s.profit/100)))).toFixed(2)} Kč</b></div>` : ''}
         <div class="tips">${tipsHtml}</div>
       </div>
       <div class="card-foot">
