@@ -1059,8 +1059,17 @@ function parseSurebetScreenshotText(rawText){
   const start = parseOcrStart(text);
   const tips = parseOcrTips(text);
 
-  const validStakes = tips.map(t => t.stake).filter(v => Number.isFinite(v));
-  const totalStake = validStakes.length >= 2 ? validStakes.reduce((a,b) => a+b, 0) : null;
+  // Celkovy vklad se snazime ziskat primo ze vsech radku "Stake:" ve screenshotu.
+  // Je to zamerne nezavisle na parseru tipu: i kdyz OCR nerozpozna jednu sazkovku
+  // nebo market, castky Stake mohou byt porad citelne a muzeme je secist.
+  const globalStakeMatches = [...text.matchAll(/Stake\s*:?\s*([0-9][0-9 \u00a0]*(?:[.,][0-9]{1,2})?)/gi)];
+  const globalStakes = globalStakeMatches
+    .map(m => parseOcrNumber(m[1]))
+    .filter(v => Number.isFinite(v) && v > 0);
+
+  const tipStakes = tips.map(t => t.stake).filter(v => Number.isFinite(v) && v > 0);
+  const stakesForTotal = globalStakes.length >= 2 ? globalStakes : tipStakes;
+  const totalStake = stakesForTotal.length >= 2 ? stakesForTotal.reduce((a,b) => a+b, 0) : null;
 
   return {
     rawText:text,
