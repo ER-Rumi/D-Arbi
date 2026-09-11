@@ -890,10 +890,23 @@ const OCR_BOOKMAKERS = [
 ];
 
 function identifyBookmakerLine(line){
-  const normalized = stripDiacritics(String(line || '')).trim();
+  const normalized = stripDiacritics(String(line || ''))
+    .replace(/[|!]/g, 'I')
+    .replace(/[^A-Za-z0-9:._ -]/g, '')
+    .trim();
+
   for(const b of OCR_BOOKMAKERS){
     if(b.re.test(normalized)) return b.name;
   }
+
+  // Fuzzy zaloha pro bezne OCR chyby v nazvech sazkovek.
+  const compact = normalized.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if(compact.includes('tipsport')) return 'Tipsport';
+  if(compact.includes('fortuna')) return 'Fortuna';
+  if(compact.includes('betano')) return 'Betano';
+  if(compact.includes('sazka') || compact.includes('sazkabet')) return 'Sazkabet';
+  if(compact.includes('synottip')) return 'Synottip';
+  if(compact.includes('kingsbet')) return 'KingsBet';
   return null;
 }
 
@@ -994,14 +1007,28 @@ const OCR_MONTHS = {
 };
 
 function parseOcrStart(text){
-  let m = text.match(/Start\s*at\s*:?\s*(\d{1,2})\s+([A-Za-zÀ-ž.]+)\s+(\d{1,2})\s*:\s*(\d{2})\s*(?:UTC)?/i);
+  // Nejdriv najdeme radek se Start at. OCR obcas zameni 0/O nebo 1/I.
+  const startLine = text.split('\n').find(line => /start\s*(?:at)?/i.test(line)) || '';
+  const normalizedLine = startLine
+    .replace(/[–—]/g, '-')
+    .replace(/\bO(?=\d|\s*[:.])/g, '0')
+    .replace(/(?<=\d)O\b/g, '0');
+
+  let m = normalizedLine.match(/Start\s*(?:at)?\s*[:;.]?\s*(\d{1,2})\s+([A-Za-zÀ-ž.]+)\s+([0-9OIl]{1,2})\s*[:.]\s*([0-9OIl]{2})/i);
+
+  // Zaloha: kdyby OCR poskodilo slovo Start, vezmeme datum/cas z radku s UTC.
+  if(!m){
+    const utcLine = text.split('\n').find(line => /UTC/i.test(line)) || '';
+    m = utcLine.match(/(\d{1,2})\s+([A-Za-zÀ-ž.]+)\s+([0-9OIl]{1,2})\s*[:.]\s*([0-9OIl]{2})/i);
+  }
   if(!m) return null;
 
-  const day = Number(m[1]);
+  const fixDigits = v => String(v).replace(/[Oo]/g,'0').replace(/[Il]/g,'1');
+  const day = Number(fixDigits(m[1]));
   const monthKey = stripDiacritics(m[2]).toLowerCase().replace(/\./g,'');
   const month = OCR_MONTHS[monthKey] ?? OCR_MONTHS[monthKey.slice(0,3)];
-  const hour = Number(m[3]);
-  const minute = Number(m[4]);
+  const hour = Number(fixDigits(m[3]));
+  const minute = Number(fixDigits(m[4]));
   if(month === undefined || day < 1 || day > 31 || hour > 23 || minute > 59) return null;
 
   const now = new Date();
@@ -1102,7 +1129,16 @@ function fillFormFromScreenshot(data){
 async function getOcrWorker(){
   if(!window.Tesseract) throw new Error('OCR knihovna se nenačetla. Zkontroluj připojení k internetu a obnov stránku.');
   if(!ocrWorkerPromise){
-    ocrWorkerPromise = window.Tesseract.createWorker('eng');
+    ocrWorkerPromise = (async () => {
+      const worker = await window.Tesseract.createWorker('eng');
+      // Telegram screenshot je jeden souvisly blok textu. PSM 6 je pro tento layout
+      // vyrazne spolehlivejsi nez automaticka detekce rozlozeni.
+      await worker.setParameters({
+        tessedit_pageseg_mode: '6',
+        preserve_interword_spaces: '1'
+      });
+      return worker;
+    })();
   }
   return await ocrWorkerPromise;
 }
@@ -1118,18 +1154,29 @@ async function resizeImageForOcr(file){
       image.src = url;
     });
 
+    // Mensi mobilni screenshoty lehce zvetsime. OCR pak lepe cte desetinne tecky,
+    // zavorky, sipky a cas. Velke obrazky naopak omezime kvuli rychlosti.
+    const targetWidth = 1550;
     const maxWidth = 1800;
-    const scale = img.naturalWidth > maxWidth ? maxWidth / img.naturalWidth : 1;
-    if(scale >= 0.999) return file;
+    let scale = 1;
+    if(img.naturalWidth < targetWidth){
+      scale = Math.min(1.7, targetWidth / img.naturalWidth);
+    }else if(img.naturalWidth > maxWidth){
+      scale = maxWidth / img.naturalWidth;
+    }
 
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(img.naturalWidth * scale);
     canvas.height = Math.round(img.naturalHeight * scale);
     const ctx = canvas.getContext('2d', { alpha:false });
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
     return await new Promise((resolve, reject) => {
-      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Obrázek se nepodařilo připravit pro OCR.')), 'image/jpeg', 0.92);
+      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Obrázek se nepodařilo připravit pro OCR.')), 'image/png');
     });
   } finally {
     URL.revokeObjectURL(url);
@@ -1150,7 +1197,9 @@ async function processScreenshotFile(file){
     const prepared = await resizeImageForOcr(file);
     const worker = await getOcrWorker();
     const result = await worker.recognize(prepared);
-    const parsed = parseSurebetScreenshotText(result?.data?.text || '');
+    const rawOcrText = result?.data?.text || '';
+    console.log('OCR text:', rawOcrText);
+    const parsed = parseSurebetScreenshotText(rawOcrText);
 
     if(!parsed.rawText){
       throw new Error('Ze screenshotu se nepodařilo přečíst žádný text.');
