@@ -561,7 +561,7 @@
         </div>
         <div class="field" style="margin-bottom:0;">
           <label for="fOdds1">Kurz</label>
-          <input type="number" step="0.01" id="fOdds1" placeholder="1.62" oninput="recalc()">
+          <input type="number" step="0.01" id="fOdds1" lang="en-US" inputmode="decimal" placeholder="1.62" oninput="recalc()">
         </div>
       </div>
     </div>
@@ -579,7 +579,7 @@
         </div>
         <div class="field" style="margin-bottom:0;">
           <label for="fOdds2">Kurz</label>
-          <input type="number" step="0.01" id="fOdds2" placeholder="2.77" oninput="recalc()">
+          <input type="number" step="0.01" id="fOdds2" lang="en-US" inputmode="decimal" placeholder="2.77" oninput="recalc()">
         </div>
       </div>
     </div>
@@ -597,7 +597,7 @@
         </div>
         <div class="field" style="margin-bottom:0;">
           <label for="fOdds3">Kurz</label>
-          <input type="number" step="0.01" id="fOdds3" placeholder="" oninput="recalc()">
+          <input type="number" step="0.01" id="fOdds3" lang="en-US" inputmode="decimal" placeholder="" oninput="recalc()">
         </div>
       </div>
     </div>
@@ -699,7 +699,7 @@
           </div>
           <div class="calc-row-main">
             <div class="field"><label>Výsledek</label><input type="text" value="1" disabled></div>
-            <div class="field"><label>Kurz</label><input type="number" step="0.01" id="calcOdds1" placeholder="2.21" oninput="calcRecalc()"></div>
+            <div class="field"><label>Kurz</label><input type="number" step="0.01" id="calcOdds1" lang="en-US" inputmode="decimal" placeholder="2.21" oninput="calcRecalc()"></div>
           </div>
           <div class="calc-row-output" id="calcOut1" style="grid-column:1 / -1;"></div>
         </div>
@@ -715,7 +715,7 @@
           </div>
           <div class="calc-row-main">
             <div class="field"><label>Výsledek</label><input type="text" value="2" disabled></div>
-            <div class="field"><label>Kurz</label><input type="number" step="0.01" id="calcOdds2" placeholder="2.10" oninput="calcRecalc()"></div>
+            <div class="field"><label>Kurz</label><input type="number" step="0.01" id="calcOdds2" lang="en-US" inputmode="decimal" placeholder="2.10" oninput="calcRecalc()"></div>
           </div>
           <div class="calc-row-output" id="calcOut2" style="grid-column:1 / -1;"></div>
         </div>
@@ -731,7 +731,7 @@
           </div>
           <div class="calc-row-main">
             <div class="field"><label>Výsledek</label><input type="text" value="3" disabled></div>
-            <div class="field"><label>Kurz</label><input type="number" step="0.01" id="calcOdds3" placeholder="" oninput="calcRecalc()"></div>
+            <div class="field"><label>Kurz</label><input type="number" step="0.01" id="calcOdds3" lang="en-US" inputmode="decimal" placeholder="" oninput="calcRecalc()"></div>
           </div>
           <div class="calc-row-output" id="calcOut3" style="grid-column:1 / -1;"></div>
         </div>
@@ -912,83 +912,243 @@ function identifyBookmakerLine(line){
 
 function cleanMarketText(value){
   return String(value || '')
-    .replace(/^[\s\[\]□■☐▪•·]+/, '')
+    .replace(/^[\s\[\]□■☐▪•·|¦]+/, '')
+    .replace(/[\s_~–—-]+$/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-function parseTipBlock(bookmaker, blockLines){
-  const joined = blockLines.join(' ');
-  const stakeMatch = joined.match(/Stake\s*:?\s*([0-9][0-9\s.,]*)/i);
-  const stake = stakeMatch ? parseOcrNumber(stakeMatch[1]) : null;
-
-  let market = '';
-  let odds = null;
-
-  for(const originalLine of blockLines){
-    let line = cleanMarketText(originalLine);
-    if(!line || /Stake\s*:/i.test(line) || /Place\s*Bet/i.test(line)) continue;
-
-    // Nejprve standardni varianta z Telegram screenshotu: TO(4.5) -> 1.77
-    let m = line.match(/^(.+?)\s*(?:→|->|=>|»|>)\s*([0-9]+(?:[.,][0-9]+)?)\s*(?:Place\s*Bet)?\s*$/i);
-
-    // OCR nekdy sipku ztrati; pak vezmeme posledni desetinne cislo na radku jako kurz.
-    if(!m){
-      m = line.match(/^(.+?)[\s:=-]+([0-9]+(?:[.,][0-9]+)?)\s*$/i);
+function bookmakerDistance(a, b){
+  a = String(a || '');
+  b = String(b || '');
+  const dp = Array.from({length:a.length+1}, () => Array(b.length+1).fill(0));
+  for(let i=0;i<=a.length;i++) dp[i][0] = i;
+  for(let j=0;j<=b.length;j++) dp[0][j] = j;
+  for(let i=1;i<=a.length;i++){
+    for(let j=1;j<=b.length;j++){
+      dp[i][j] = Math.min(
+        dp[i-1][j] + 1,
+        dp[i][j-1] + 1,
+        dp[i-1][j-1] + (a[i-1] === b[j-1] ? 0 : 1)
+      );
     }
+  }
+  return dp[a.length][b.length];
+}
 
+function fuzzyBookmaker(line){
+  const direct = identifyBookmakerLine(line);
+  if(direct) return direct;
+
+  const compact = stripDiacritics(String(line || ''))
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+  if(!compact || compact.length < 4) return null;
+
+  const known = [
+    ['tipsport','Tipsport'],
+    ['fortuna','Fortuna'],
+    ['betano','Betano'],
+    ['betanocz','Betano'],
+    ['sazka','Sazkabet'],
+    ['sazkabet','Sazkabet'],
+    ['synottip','Synottip'],
+    ['kingsbet','KingsBet']
+  ];
+
+  for(const [key, name] of known){
+    if(compact.includes(key) || key.includes(compact)) return name;
+  }
+
+  let best = null;
+  let bestDistance = 99;
+  for(const [key, name] of known){
+    const d = bookmakerDistance(compact, key);
+    if(d < bestDistance){
+      bestDistance = d;
+      best = name;
+    }
+  }
+  return bestDistance <= 2 ? best : null;
+}
+
+function parseMarketOddsLoose(originalLine, previousLine){
+  let line = cleanMarketText(originalLine)
+    .replace(/Place\s*Bet/ig, '')
+    .trim();
+
+  if(!line || /^(?:Profit|Sport|League|Event|Start|Stake)\s*:/i.test(line)) return null;
+
+  // OCR muze dat samotny kurz na dalsi radek. V tom pripade spojime predchozi radek s kurzem.
+  if(/^\s*[0-9]+(?:[.,][0-9]+)?\s*$/.test(line) && previousLine){
+    line = cleanMarketText(previousLine) + ' ' + line;
+  }
+
+  const matches = [...line.matchAll(/([0-9]+(?:[.,][0-9]+)?)/g)];
+  if(!matches.length) return null;
+
+  // Kurz je posledni rozumne desetinne cislo na radku.
+  let oddsMatch = null;
+  for(let i=matches.length-1;i>=0;i--){
+    const n = parseOcrNumber(matches[i][1]);
+    if(Number.isFinite(n) && n > 1 && n < 100){
+      oddsMatch = matches[i];
+      break;
+    }
+  }
+  if(!oddsMatch) return null;
+
+  const odds = parseOcrNumber(oddsMatch[1]);
+  let market = cleanMarketText(line.slice(0, oddsMatch.index));
+  market = market
+    .replace(/[→»>]+\s*$/g, '')
+    .replace(/(?:-|=)+>\s*$/g, '')
+    .replace(/[\s_~–—-]+$/g, '')
+    .trim();
+
+  if(!market || market.length < 2) return null;
+  if(/^(?:Profit|Sport|League|Event|Start|Stake)$/i.test(market)) return null;
+
+  return { market, odds };
+}
+
+function normalizeSurebetMarket(value, fallbackThreshold){
+  let s = cleanMarketText(value)
+    .replace(/[→»>]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if(!s) return '';
+
+  const compactStart = stripDiacritics(s).toUpperCase().replace(/\s/g, '');
+  let side = '';
+  if(/^T[O0Q]/.test(compactStart)) side = 'TO';
+  else if(/^T[UUV]/.test(compactStart) || /^TUE/.test(compactStart)) side = 'TU';
+
+  const numberMatch = s.match(/([0-9]+(?:[.,][0-9]+)?)/);
+  const threshold = numberMatch ? parseOcrNumber(numberMatch[1]) : fallbackThreshold;
+
+  if(side && Number.isFinite(threshold)){
+    let suffix = '';
+    if(numberMatch){
+      suffix = s.slice((numberMatch.index || 0) + numberMatch[0].length)
+        .replace(/^[\s\)\]\}\>@_~–—-]+/, '')
+        .replace(/[\s_~–—-]+$/g, '')
+        .trim();
+      // Zachovej jen skutecny text za hranici, ne OCR smeti.
+      if(!/[A-Za-zÀ-ž]{2,}/.test(suffix)) suffix = '';
+    }
+    const thresholdText = String(threshold).replace(',', '.');
+    return `${side}(${thresholdText})${suffix ? ' ' + suffix : ''}`;
+  }
+
+  // Oprava nejcastejsi OCR chyby: zavorka je prectena jako @.
+  s = s.replace(/^((?:TO|TU))\s*@\s*/i, '$1(');
+  return s.replace(/[\s_~–—-]+$/g, '').trim();
+}
+
+function repairPairedMarkets(tips){
+  let threshold = null;
+  for(const tip of tips){
+    const m = String(tip.market || '').match(/([0-9]+(?:[.,][0-9]+)?)/);
     if(m){
-      market = cleanMarketText(m[1]);
-      odds = parseOcrNumber(m[2]);
-      if(market && odds && odds > 1) break;
+      const n = parseOcrNumber(m[1]);
+      if(Number.isFinite(n)){ threshold = n; break; }
     }
   }
 
-  return { bookmaker, market, odds, stake };
+  tips.forEach(tip => {
+    tip.market = normalizeSurebetMarket(tip.market, threshold);
+  });
+  return tips;
 }
 
 function parseOcrTips(text){
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  const starts = [];
-
-  lines.forEach((line, i) => {
-    const bookmaker = identifyBookmakerLine(line);
-    if(bookmaker) starts.push({ index:i, bookmaker });
-  });
-
   const tips = [];
-  for(let i=0;i<starts.length;i++){
-    const start = starts[i];
-    const end = i + 1 < starts.length ? starts[i+1].index : lines.length;
-    const block = lines.slice(start.index + 1, end);
-    const tip = parseTipBlock(start.bookmaker, block);
-    if(tip.market && tip.odds && tip.odds > 1) tips.push(tip);
+
+  // Nejspolehlivejsi kotva je radek Stake. Pro kazdy Stake hledame market/kurz tesne nad nim
+  // a sazkovku jeste o par radku vys. Tohle funguje i kdyz OCR poskodi sipku nebo zavorku.
+  for(let i=0;i<lines.length;i++){
+    const stakeMatch = lines[i].match(/Stake\s*:?\s*([0-9][0-9\s.,]*)/i);
+    if(!stakeMatch) continue;
+
+    const stake = parseOcrNumber(stakeMatch[1]);
+    let parsedMarket = null;
+    let marketIndex = -1;
+
+    for(let j=i-1;j>=Math.max(0, i-5);j--){
+      const previous = j > 0 ? lines[j-1] : '';
+      const candidate = parseMarketOddsLoose(lines[j], previous);
+      if(candidate){
+        parsedMarket = candidate;
+        marketIndex = j;
+        break;
+      }
+      if(/Stake\s*:/i.test(lines[j])) break;
+    }
+
+    if(!parsedMarket) continue;
+
+    let bookmaker = '';
+    for(let j=marketIndex-1;j>=Math.max(0, marketIndex-8);j--){
+      const guessed = fuzzyBookmaker(lines[j]);
+      if(guessed){
+        bookmaker = guessed;
+        break;
+      }
+      if(/Stake\s*:/i.test(lines[j])) break;
+    }
+
+    tips.push({
+      bookmaker,
+      market: parsedMarket.market,
+      odds: parsedMarket.odds,
+      stake
+    });
   }
 
-  // Zalozni parser pro screenshoty, kde OCR spatne precte nazev sazkovky.
+  // Zaloha, kdyby OCR uplne znicilo slovo Stake: vezmeme radky s marketem a kurzem.
   if(tips.length < 2){
     const generic = [];
     for(let i=0;i<lines.length;i++){
-      const line = cleanMarketText(lines[i]);
-      let m = line.match(/^(.+?)\s*(?:→|->|=>|»|>)\s*([0-9]+(?:[.,][0-9]+)?)/);
-      if(!m) continue;
-      const market = cleanMarketText(m[1]);
-      const odds = parseOcrNumber(m[2]);
-      if(!market || !odds || odds <= 1) continue;
+      const parsed = parseMarketOddsLoose(lines[i], i > 0 ? lines[i-1] : '');
+      if(!parsed) continue;
+
+      // Surebet market obvykle zacina T (TO/TU), pripadne obsahuje zavorku/hranici.
+      const looksLikeMarket = /^(?:T[O0UQVE]|Over|Under)/i.test(parsed.market) || /\d+[.,]\d+/.test(parsed.market);
+      if(!looksLikeMarket) continue;
+
+      let bookmaker = '';
+      for(let j=i-1;j>=Math.max(0, i-7);j--){
+        const guessed = fuzzyBookmaker(lines[j]);
+        if(guessed){ bookmaker = guessed; break; }
+      }
+
       const next = lines.slice(i+1, i+4).join(' ');
       const sm = next.match(/Stake\s*:?\s*([0-9][0-9\s.,]*)/i);
-      generic.push({ bookmaker:'', market, odds, stake: sm ? parseOcrNumber(sm[1]) : null });
-    }
-    if(generic.length >= 2){
-      // Kdyz jsme sazkovku precetli aspon u nekterych bloku, zachovej ji podle poradi.
-      generic.forEach((g, i) => {
-        if(starts[i]) g.bookmaker = starts[i].bookmaker;
+      generic.push({
+        bookmaker,
+        market: parsed.market,
+        odds: parsed.odds,
+        stake: sm ? parseOcrNumber(sm[1]) : null
       });
-      return generic.slice(0,3);
+    }
+
+    if(generic.length > tips.length){
+      tips.length = 0;
+      tips.push(...generic.slice(0,3));
     }
   }
 
-  return tips.slice(0,3);
+  // Pokud OCR jednu sazkovku neprecte, zkus ji doplnit podle poradi nalezenych bookmaker radku.
+  const bookmakerLines = lines.map((line, index) => ({ index, bookmaker:fuzzyBookmaker(line) }))
+    .filter(x => x.bookmaker);
+  tips.forEach((tip, idx) => {
+    if(!tip.bookmaker && bookmakerLines[idx]) tip.bookmaker = bookmakerLines[idx].bookmaker;
+  });
+
+  return repairPairedMarkets(tips.slice(0,3));
 }
 
 const OCR_MONTHS = {
@@ -1105,7 +1265,7 @@ function fillFormFromScreenshot(data){
     const i = idx + 1;
     document.getElementById('fSK'+i).value = tip.bookmaker || '';
     document.getElementById('fMarket'+i).value = tip.market || '';
-    document.getElementById('fOdds'+i).value = tip.odds || '';
+    document.getElementById('fOdds'+i).value = Number.isFinite(Number(tip.odds)) ? String(Number(tip.odds)).replace(',', '.') : '';
   });
 
   if(data.tips.length >= 3){
@@ -1209,6 +1369,7 @@ async function processScreenshotFile(file){
     const rawOcrText = result?.data?.text || '';
     console.log('OCR text:', rawOcrText);
     const parsed = parseSurebetScreenshotText(rawOcrText);
+    console.log('OCR parsed:', parsed);
 
     if(!parsed.rawText){
       throw new Error('Ze screenshotu se nepodařilo přečíst žádný text.');
